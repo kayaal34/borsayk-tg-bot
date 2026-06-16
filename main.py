@@ -1,146 +1,176 @@
 import logging
 from datetime import time
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, ConversationHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# Modüllerin İçeri Aktarılması
 from config import TELEGRAM_BOT_TOKEN, TARGET_CHAT_ID, TZ_YEKATERINBURG, logger
 from data_fetcher import get_all_data
 from formatter import format_daily_message
 from settings_manager import load_settings, save_settings
 
-ASK_SYMBOLS, ASK_FUNDS = range(2)
+# Saat sorma adımları
+ASK_TIME_1, ASK_TIME_2, ASK_TIME_3 = range(3)
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bot başlatıldığında ayarları yapmak için kullanılır."""
-    await update.message.reply_text(
-        "Merhaba! Ben Finans Raporu botuyum.\n"
-        "Her gün sana düzenli veriler sunabilirim.\n\n"
-        "Öncelikle hangi değerli madenlerin, döviz kurlarının veya hisselerin bilgisini almak istersiniz?\n"
-        "(Örn: Ons Altın:GC=F, Dolar:TRY=X, Apple:AAPL)\n"
-        "Lütfen [İsim:Sembol] formatında virgülle ayırarak yazın veya varsayılanları kullanmak için 'gec' yazın:"
-    )
-    return ASK_SYMBOLS
+def get_main_menu():
+    """Ekranın altında kalıcı olarak duran ana menü butonları."""
+    keyboard = [
+        ["📊 Anlık Rapor", "⚙️ Saat Ayarları"],
+        ["⏰ Aktif Saatleri Gör"], # YENİ EKLENEN BUTON
+        ["▶️ Başlat", "⏸️ Durdur"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-async def handle_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+def schedule_jobs(application: Application):
     settings = load_settings()
-    
-    if text.lower() != 'gec':
-        new_symbols = {}
+    job_queue = application.job_queue
+    for job in job_queue.jobs():
+        if job.name == "DailyReport":
+            job.schedule_removal()
+
+    if not settings.get("is_active", True):
+        logger.info("Bot pasif durumda.")
+        return
+
+    for t_str in settings.get("notification_times", []):
         try:
-            items = text.split(',')
-            for item in items:
-                name, symbol = item.split(':')
-                new_symbols[name.strip()] = symbol.strip()
-            settings['symbols'] = new_symbols
-            save_settings(settings)
-            await update.message.reply_text("Semboller başarıyla güncellendi!")
+            h, m = map(int, t_str.split(':'))
+            t = time(hour=h, minute=m, tzinfo=TZ_YEKATERINBURG)
+            job_queue.run_daily(send_daily_report, time=t, name="DailyReport")
         except Exception as e:
-            await update.message.reply_text("Hatalı format! Lütfen 'İsim:Sembol, İsim2:Sembol2' formatında girin. Değiştirmeden geçmek için 'gec' yazabilirsiniz.")
-            return ASK_SYMBOLS
-            
-    await update.message.reply_text(
-        "Harika! Peki takip etmek istediğiniz TEFAS fonları var mı?\n"
-        "Sadece fon kodlarını virgülle ayırarak yazın (Örn: TI1, MAC, GMR)\n"
-        "Veya varsayılanları korumak için 'gec' yazın:"
-    )
-    return ASK_FUNDS
+            logger.error(f"Saat hatası ({t_str}): {e}")
 
-async def handle_funds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
+    if not TARGET_CHAT_ID: return
+    try:
+        data = await get_all_data()
+        await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=format_daily_message(data), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Gönderim hatası: {e}")
+
+# --- SAAT AYARLAMA SOHBETİ ---
+async def start_time_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['temp_times'] = []
+    await update.message.reply_text(
+        "⚙️ <b>Saat Ayarlama Sihirbazı</b>\n\n"
+        "1. Bildirim saati ne zaman olsun? (Örn: 09:00)\n"
+        "<i>İstemiyorsanız 'gec' yazın.</i>",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove() # Menüyü geçici gizle
+    )
+    return ASK_TIME_1
+
+async def handle_time_1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    settings = load_settings()
-    
     if text.lower() != 'gec':
-        funds = [f.strip().upper() for f in text.split(',')]
-        settings['tefas_funds'] = funds
+        context.user_data['temp_times'].append(text)
+        
+    await update.message.reply_text(
+        "2. Bildirim saati ne zaman olsun? (Örn: 14:00)\n"
+        "<i>İstemiyorsanız 'gec' yazın.</i>",
+        parse_mode="HTML"
+    )
+    return ASK_TIME_2
+
+async def handle_time_2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != 'gec':
+        context.user_data['temp_times'].append(text)
+        
+    await update.message.reply_text(
+        "3. Bildirim saati ne zaman olsun? (Örn: 18:00)\n"
+        "<i>İstemiyorsanız 'gec' yazın.</i>",
+        parse_mode="HTML"
+    )
+    return ASK_TIME_3
+
+async def handle_time_3(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != 'gec':
+        context.user_data['temp_times'].append(text)
+        
+    # Ayarları Kaydet
+    settings = load_settings()
+    times = context.user_data['temp_times']
+    if times:
+        settings['notification_times'] = times
         save_settings(settings)
         
-    await update.message.reply_text("Kurulum tamamlandı! /rapor yazarak anlık veriyi alabilirsin.")
+    schedule_jobs(context.application)
+    
+    saatler = ", ".join(times) if times else "Hiçbiri (Bot bildirim atmayacak)"
+    await update.message.reply_text(
+        f"✅ Kurulum tamamlandı!\n⏰ Aktif Saatler: {saatler}", 
+        reply_markup=get_main_menu() # Menüyü geri getir
+    )
     return ConversationHandler.END
 
 async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Kurulum iptal edildi.")
+    await update.message.reply_text("İşlem iptal edildi.", reply_markup=get_main_menu())
     return ConversationHandler.END
 
-async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
-    """Zamanlanmış görev olarak çalışan ve kanala/kullanıcıya asıl veriyi yollayan fonksiyon."""
-    if not TARGET_CHAT_ID:
-        logger.error("TARGET_CHAT_ID ortam değişkeni bulunamadı. Mesaj gönderilemez.")
-        return
+# --- MENÜ BUTONLARI FONKSİYONLARI ---
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hoş geldin! Alt menüden işlemini seçebilirsin.", reply_markup=get_main_menu())
 
-    logger.info("Zamanlanmış günlük rapor hazırlanıyor...")
-    try:
-        data = await get_all_data()
-        message = format_daily_message(data)
-        
-        await context.bot.send_message(
-            chat_id=TARGET_CHAT_ID,
-            text=message,
-            parse_mode="HTML"
-        )
-        logger.info("Rapor başarıyla gönderildi.")
-    except Exception as e:
-        logger.error(f"Rapor gönderimi sırasında beklenmeyen bir hata oluştu: {str(e)}")
+async def btn_rapor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Veriler çekiliyor...")
+    data = await get_all_data()
+    await update.message.reply_text(format_daily_message(data), parse_mode="HTML")
 
-async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Test amaçlı veya anlık kontrol için manual tetikleme komutu (/rapor).
-    Bu komut her çağırıldığında canlı verileri çeker.
-    """
-    await update.message.reply_text("Güncel veriler sunuculardan çekiliyor, lütfen bekleyin...")
+async def btn_durdur(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    settings = load_settings()
+    settings['is_active'] = False
+    save_settings(settings)
+    schedule_jobs(context.application)
+    await update.message.reply_text("🛑 Otomatik bildirimler durduruldu.")
+
+async def btn_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    settings = load_settings()
+    settings['is_active'] = True
+    save_settings(settings)
+    schedule_jobs(context.application)
+    await update.message.reply_text("🟢 Otomatik bildirimler başlatıldı.")
+
+# YENİ EKLENEN SAAT GÖSTERME FONKSİYONU
+async def btn_saatleri_gor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    settings = load_settings()
+    times = settings.get("notification_times", [])
+    is_active = settings.get("is_active", True)
     
-    try:
-        data = await get_all_data()
-        message = format_daily_message(data)
+    durum = "🟢 Çalışıyor" if is_active else "🛑 Durduruldu"
+    
+    if times:
+        saatler_str = ", ".join(times)
+        mesaj = f"⏰ <b>Kayıtlı Bildirim Saatleri:</b> {saatler_str}\n🤖 <b>Bot Durumu:</b> {durum}"
+    else:
+        mesaj = f"⏰ Kayıtlı hiçbir bildirim saati bulunmuyor.\n🤖 <b>Bot Durumu:</b> {durum}"
         
-        await update.message.reply_text(
-            text=message,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Manual komut (/rapor) hatası: {str(e)}")
-        await update.message.reply_text("Veriler çekilirken bir hata ile karşılaşıldı. Lütfen daha sonra tekrar deneyin.")
+    await update.message.reply_text(mesaj, parse_mode="HTML")
 
 def main():
-    """Uygulamanın giriş noktası. Botu ve zamanlanmış görevleri konfigüre eder."""
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN bulunamadı. Lütfen .env dosyasını kontrol edin.")
-        return
-
-    logger.info("Finans Botu başlatılıyor...")
-    
-    # Yeni v20+ asenkron uygulama yapısı
+    if not TELEGRAM_BOT_TOKEN: return
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Kurulum sohbeti (Conversation Handler)
+    # Saat ayarlama sihirbazı
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", cmd_start)],
+        entry_points=[MessageHandler(filters.Regex("^⚙️ Saat Ayarları$"), start_time_setup)],
         states={
-            ASK_SYMBOLS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_symbols)],
-            ASK_FUNDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_funds)],
+            ASK_TIME_1: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time_1)],
+            ASK_TIME_2: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time_2)],
+            ASK_TIME_3: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time_3)],
         },
         fallbacks=[CommandHandler("cancel", cancel_setup)]
     )
     application.add_handler(conv_handler)
 
-    # Manuel tetikleyici komutu opsiyonel olarak ekliyoruz
-    application.add_handler(CommandHandler("rapor", cmd_report))
+    # Normal buton ve komut dinleyicileri
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(MessageHandler(filters.Regex("^📊 Anlık Rapor$"), btn_rapor))
+    application.add_handler(MessageHandler(filters.Regex("^▶️ Başlat$"), btn_baslat))
+    application.add_handler(MessageHandler(filters.Regex("^⏸️ Durdur$"), btn_durdur))
+    application.add_handler(MessageHandler(filters.Regex("^⏰ Aktif Saatleri Gör$"), btn_saatleri_gor)) # YENİ DİNLEYİCİ
 
-    # JobQueue yapısını kurma
-    job_queue = application.job_queue
-    
-    # 1. Görev: Sabah 09:00
-    time_morning = time(hour=9, minute=0, tzinfo=TZ_YEKATERINBURG)
-    job_queue.run_daily(send_daily_report, time=time_morning, name="MorningReport")
-    
-    # 2. Görev: Akşam 18:00
-    time_evening = time(hour=18, minute=0, tzinfo=TZ_YEKATERINBURG)
-    job_queue.run_daily(send_daily_report, time=time_evening, name="EveningReport")
-
-    logger.info(f"Zamanlanmış görevler kuruldu: Günlük 09:00 ve 18:00 (Timezone: {TZ_YEKATERINBURG}).")
-
-    # Botun sürekli dinleme (polling) döngüsünü başlat
+    schedule_jobs(application)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
