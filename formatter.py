@@ -3,6 +3,12 @@ def get_emoji(change_pct):
     elif change_pct < -0.01: return "🔴"
     return "⚪"
 
+def format_line(label, item, decimals):
+    # data_fetcher, veri alamadığı sembolleri 0 fiyatla döndürür
+    if not item['price']:
+        return f"⚪ <b>{label}</b>: <i>veri yok</i>\n"
+    return f"{get_emoji(item['change'])} <b>{label}</b>: <code>{item['price']:,.{decimals}f}</code> <i>({item['change']:+.2f}%)</i>\n"
+
 def format_daily_message(data):
     html = "<b>🌟 Finansal Piyasa Özeti</b>\n\n"
     piyasa = data.get("Piyasa", {})
@@ -18,20 +24,17 @@ def format_daily_message(data):
     }
     for sym, isim in kurlar.items():
         if sym in piyasa:
-            item = piyasa[sym]
-            html += f"{get_emoji(item['change'])} <b>{isim: <15}</b>: <code>{item['price']:,.4f}</code> <i>({item['change']:+.2f}%)</i>\n"
+            html += format_line(f"{isim: <15}", piyasa[sym], 4)
 
     # Emtia
     html += "\n<b>🪙 Değerli Madenler</b>\n"
     for sym in ["Gram Altın", "Gram Gümüş", "Ons Altın"]:
         if sym in piyasa:
-            item = piyasa[sym]
-            html += f"{get_emoji(item['change'])} <b>{sym: <15}</b>: <code>{item['price']:,.2f}</code> <i>({item['change']:+.2f}%)</i>\n"
+            html += format_line(f"{sym: <15}", piyasa[sym], 2)
 
     # Borsa
     html += "\n<b>📈 Borsa (Endeks)</b>\n"
     if "BIST 100" in piyasa:
-        item = piyasa["BIST 100"]
-        html += f"{get_emoji(item['change'])} <b>BIST 100</b>: <code>{item['price']:,.2f}</code> <i>({item['change']:+.2f}%)</i>\n"
+        html += format_line("BIST 100", piyasa["BIST 100"], 2)
         
     return html
