@@ -15,5 +15,6 @@ def run():
 
 def keep_alive():
     # Botun çalışmasını durdurmamak için web sunucusunu ayrı bir kanalda (thread) başlatıyoruz
-    t = Thread(target=run)
+    # daemon: bot kapanınca web sunucusu süreci açık tutmasın
+    t = Thread(target=run, daemon=True)
     t.start()

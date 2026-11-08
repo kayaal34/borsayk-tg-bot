@@ -1,12 +1,12 @@
 import logging
-from datetime import time
+from datetime import datetime, time
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
 from config import TELEGRAM_BOT_TOKEN, TARGET_CHAT_ID, TZ_YEKATERINBURG, logger
 from data_fetcher import get_all_data
 from formatter import format_daily_message
-from settings_manager import load_settings, save_settings
+from settings_manager import load_settings, parse_time, save_settings
 from keep_alive import keep_alive
 
 # Saat sorma adımları
@@ -44,7 +44,8 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     if not TARGET_CHAT_ID: return
     try:
         data = await get_all_data()
-        await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=format_daily_message(data), parse_mode="HTML")
+        text = format_daily_message(data, now=datetime.now(TZ_YEKATERINBURG))
+        await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=text, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Gönderim hatası: {e}")
 
@@ -53,38 +54,53 @@ async def start_time_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['temp_times'] = []
     await update.message.reply_text(
         "⚙️ <b>Saat Ayarlama Sihirbazı</b>\n\n"
-        "1. Bildirim saati ne zaman olsun? (Örn: 09:00)\n"
+        "1️⃣ İlk bildirim saati? (Örn: 09:00)\n"
         "<i>İstemiyorsanız 'gec' yazın.</i>",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove()
     )
     return ASK_TIME_1
 
-async def handle_time_1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+SKIP_WORDS = ("gec", "geç", "-")
+
+async def read_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Girilen saati listeye ekler. Geçersizse False döner."""
     text = update.message.text.strip()
-    if text.lower() != 'gec': context.user_data['temp_times'].append(text)
-    await update.message.reply_text("2. Bildirim saati? (İstemiyorsanız 'gec')", parse_mode="HTML")
+    if text.lower() in SKIP_WORDS:
+        return True
+    parsed = parse_time(text)
+    if parsed is None:
+        await update.message.reply_text("⚠️ Saati anlayamadım. Örnek: <code>09:00</code> (veya 'gec')", parse_mode="HTML")
+        return False
+    if parsed not in context.user_data['temp_times']:
+        context.user_data['temp_times'].append(parsed)
+    return True
+
+async def handle_time_1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await read_time(update, context): return ASK_TIME_1
+    await update.message.reply_text("2️⃣ İkinci bildirim saati? (İstemiyorsanız 'gec')")
     return ASK_TIME_2
 
 async def handle_time_2(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text.lower() != 'gec': context.user_data['temp_times'].append(text)
-    await update.message.reply_text("3. Bildirim saati? (İstemiyorsanız 'gec')", parse_mode="HTML")
+    if not await read_time(update, context): return ASK_TIME_2
+    await update.message.reply_text("3️⃣ Üçüncü bildirim saati? (İstemiyorsanız 'gec')")
     return ASK_TIME_3
 
 async def handle_time_3(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text.lower() != 'gec': context.user_data['temp_times'].append(text)
-    
+    if not await read_time(update, context): return ASK_TIME_3
     settings = load_settings()
-    times = context.user_data['temp_times']
+    times = sorted(context.user_data['temp_times'])
     if times:
         settings['notification_times'] = times
         save_settings(settings)
-    
+        mesaj = f"✅ Kurulum tamamlandı!\n⏰ Aktif saatler: {', '.join(times)}"
+    else:
+        # Hiç saat girilmediyse eski saatler korunur; kullanıcıya bunu söyleyelim
+        eski = ", ".join(settings.get("notification_times", [])) or "yok"
+        mesaj = f"ℹ️ Yeni saat girilmedi, eski saatler korunuyor: {eski}"
+
     schedule_jobs(context.application)
-    saatler = ", ".join(times) if times else "Hiçbiri"
-    await update.message.reply_text(f"✅ Kurulum tamamlandı!\n⏰ Aktif Saatler: {saatler}", reply_markup=get_main_menu())
+    await update.message.reply_text(mesaj, reply_markup=get_main_menu())
     return ConversationHandler.END
 
 async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,32 +109,44 @@ async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- MENÜ BUTONLARI ---
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hoş geldin! Alt menüden işlemini seçebilirsin.", reply_markup=get_main_menu())
+    await update.message.reply_text(
+        "👋 Hoş geldin!\n\n"
+        "📊 <b>Anlık Rapor</b>: kurlar, altın ve borsa şimdi\n"
+        "⚙️ <b>Saat Ayarları</b>: günlük rapor saatleri\n"
+        "⏰ <b>Aktif Saatleri Gör</b>: kayıtlı saatler ve durum\n"
+        "▶️ / ⏸️ otomatik raporları aç veya kapat",
+        parse_mode="HTML", reply_markup=get_main_menu())
 
 async def btn_rapor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Veriler çekiliyor...")
+    # Bekleme mesajını sonradan raporla değiştiriyoruz, sohbet kalabalıklaşmasın
+    bekleme = await update.message.reply_text("⏳ Veriler çekiliyor...")
     data = await get_all_data()
-    await update.message.reply_text(format_daily_message(data), parse_mode="HTML")
+    text = format_daily_message(data, now=datetime.now(TZ_YEKATERINBURG))
+    await bekleme.edit_text(text, parse_mode="HTML")
 
 async def btn_durdur(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
     settings['is_active'] = False
     save_settings(settings)
     schedule_jobs(context.application)
-    await update.message.reply_text("🛑 Otomatik bildirimler durduruldu.")
+    await update.message.reply_text("⏸️ Otomatik bildirimler durduruldu. Tekrar açmak için ▶️ Başlat.")
 
 async def btn_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
     settings['is_active'] = True
     save_settings(settings)
     schedule_jobs(context.application)
-    await update.message.reply_text("🟢 Otomatik bildirimler başlatıldı.")
+    times = ", ".join(settings.get("notification_times", [])) or "yok"
+    await update.message.reply_text(f"▶️ Otomatik bildirimler açıldı. Saatler: {times}")
 
 async def btn_saatleri_gor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
     times = settings.get("notification_times", [])
-    durum = "🟢 Çalışıyor" if settings.get("is_active", True) else "🛑 Durduruldu"
-    mesaj = f"⏰ <b>Kayıtlı Saatler:</b> {', '.join(times) if times else 'Yok'}\n🤖 <b>Durum:</b> {durum}"
+    durum = "🟢 Çalışıyor" if settings.get("is_active", True) else "⏸️ Durduruldu"
+    saatler = ", ".join(times) if times else "yok"
+    mesaj = (f"⏰ <b>Kayıtlı saatler:</b> {saatler}\n"
+             f"🌍 <b>Saat dilimi:</b> Yekaterinburg\n"
+             f"🤖 <b>Durum:</b> {durum}")
     await update.message.reply_text(mesaj, parse_mode="HTML")
 
 def main():

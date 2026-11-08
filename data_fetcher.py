@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import yfinance as yf
 from settings_manager import load_settings
 
 logger = logging.getLogger("FinBot.DataFetcher")
 
-async def fetch_yfinance_data():
+def _fetch_yfinance_data_sync():
     settings = load_settings()
     symbols = settings.get("symbols", {})
     results = {}
@@ -70,6 +71,11 @@ async def fetch_yfinance_data():
     except Exception as e:
         logger.error(f"YFinance hata: {str(e)}")
     return results
+
+async def fetch_yfinance_data():
+    # yfinance istekleri bloklayıcı; botun diğer mesajlara cevap verebilmesi
+    # için ayrı bir thread'de çalıştırıyoruz
+    return await asyncio.to_thread(_fetch_yfinance_data_sync)
 
 async def get_all_data():
     yfinance_res = await fetch_yfinance_data()
