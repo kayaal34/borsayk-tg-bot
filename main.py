@@ -105,7 +105,13 @@ async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- MENÜ BUTONLARI ---
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hoş geldin! Alt menüden işlemini seçebilirsin.", reply_markup=get_main_menu())
+    await update.message.reply_text(
+        "👋 Hoş geldin!\n\n"
+        "📊 <b>Anlık Rapor</b>: kurlar, altın ve borsa şimdi\n"
+        "⚙️ <b>Saat Ayarları</b>: günlük rapor saatleri\n"
+        "⏰ <b>Aktif Saatleri Gör</b>: kayıtlı saatler ve durum\n"
+        "▶️ / ⏸️ otomatik raporları aç veya kapat",
+        parse_mode="HTML", reply_markup=get_main_menu())
 
 async def btn_rapor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Bekleme mesajını sonradan raporla değiştiriyoruz, sohbet kalabalıklaşmasın
@@ -119,20 +125,24 @@ async def btn_durdur(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings['is_active'] = False
     save_settings(settings)
     schedule_jobs(context.application)
-    await update.message.reply_text("🛑 Otomatik bildirimler durduruldu.")
+    await update.message.reply_text("⏸️ Otomatik bildirimler durduruldu. Tekrar açmak için ▶️ Başlat.")
 
 async def btn_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
     settings['is_active'] = True
     save_settings(settings)
     schedule_jobs(context.application)
-    await update.message.reply_text("🟢 Otomatik bildirimler başlatıldı.")
+    times = ", ".join(settings.get("notification_times", [])) or "yok"
+    await update.message.reply_text(f"▶️ Otomatik bildirimler açıldı. Saatler: {times}")
 
 async def btn_saatleri_gor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
     times = settings.get("notification_times", [])
-    durum = "🟢 Çalışıyor" if settings.get("is_active", True) else "🛑 Durduruldu"
-    mesaj = f"⏰ <b>Kayıtlı Saatler:</b> {', '.join(times) if times else 'Yok'}\n🤖 <b>Durum:</b> {durum}"
+    durum = "🟢 Çalışıyor" if settings.get("is_active", True) else "⏸️ Durduruldu"
+    saatler = ", ".join(times) if times else "yok"
+    mesaj = (f"⏰ <b>Kayıtlı saatler:</b> {saatler}\n"
+             f"🌍 <b>Saat dilimi:</b> Yekaterinburg\n"
+             f"🤖 <b>Durum:</b> {durum}")
     await update.message.reply_text(mesaj, parse_mode="HTML")
 
 def main():
