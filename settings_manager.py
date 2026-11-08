@@ -15,7 +15,11 @@ DEFAULT_SETTINGS = {
         "USD/CNY": "CNY=X" # Çapraz kur için Dolar/Yuan paritesini alıyoruz
     },
     "notification_times": ["09:00", "18:00"],
-    "is_active": True
+    "is_active": True,
+    # {"altin": 10, "usd": 500, "hisse:THYAO": 20, "fon:AFT": 1500}
+    "portfolio": {},
+    # Otomatik alınamayan fiyatlar, ör. {"fon:AFT": 2.3456}
+    "manual_prices": {}
 }
 
 def load_settings():
