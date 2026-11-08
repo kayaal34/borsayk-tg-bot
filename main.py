@@ -1,5 +1,5 @@
 import logging
-from datetime import time
+from datetime import datetime, time
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
@@ -44,7 +44,8 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     if not TARGET_CHAT_ID: return
     try:
         data = await get_all_data()
-        await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=format_daily_message(data), parse_mode="HTML")
+        text = format_daily_message(data, now=datetime.now(TZ_YEKATERINBURG))
+        await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=text, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Gönderim hatası: {e}")
 
@@ -107,9 +108,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hoş geldin! Alt menüden işlemini seçebilirsin.", reply_markup=get_main_menu())
 
 async def btn_rapor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Veriler çekiliyor...")
+    # Bekleme mesajını sonradan raporla değiştiriyoruz, sohbet kalabalıklaşmasın
+    bekleme = await update.message.reply_text("⏳ Veriler çekiliyor...")
     data = await get_all_data()
-    await update.message.reply_text(format_daily_message(data), parse_mode="HTML")
+    text = format_daily_message(data, now=datetime.now(TZ_YEKATERINBURG))
+    await bekleme.edit_text(text, parse_mode="HTML")
 
 async def btn_durdur(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
