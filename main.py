@@ -5,7 +5,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 from config import TELEGRAM_BOT_TOKEN, TARGET_CHAT_ID, TZ_YEKATERINBURG, logger
 from data_fetcher import get_all_data
-from formatter import format_daily_message
+from formatter import format_daily_message, format_portfolio
+from portfolio import add_holding, fetch_extra_prices, parse_amount, parse_asset, value_portfolio
 from settings_manager import load_settings, save_settings
 from keep_alive import keep_alive
 
@@ -16,7 +17,7 @@ def get_main_menu():
     """Ekranın altında kalıcı olarak duran ana menü butonları."""
     keyboard = [
         ["📊 Anlık Rapor", "⚙️ Saat Ayarları"],
-        ["⏰ Aktif Saatleri Gör"],
+        ["💼 Portföyüm", "⏰ Aktif Saatleri Gör"],
         ["▶️ Başlat", "⏸️ Durdur"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -40,11 +41,21 @@ def schedule_jobs(application: Application):
         except Exception as e:
             logger.error(f"Saat hatası ({t_str}): {e}")
 
+async def portfolio_message(market):
+    settings = load_settings()
+    holdings = settings.get("portfolio", {})
+    extra = await fetch_extra_prices(holdings, settings.get("manual_prices", {}))
+    return format_portfolio(value_portfolio(holdings, market, extra))
+
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     if not TARGET_CHAT_ID: return
     try:
         data = await get_all_data()
         await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=format_daily_message(data), parse_mode="HTML")
+        # Portföy girildiyse günlük değerini de ayrı mesaj olarak gönder
+        if load_settings().get("portfolio"):
+            text = await portfolio_message(data.get("Piyasa", {}))
+            await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=text, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Gönderim hatası: {e}")
 
@@ -121,6 +132,81 @@ async def btn_saatleri_gor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mesaj = f"⏰ <b>Kayıtlı Saatler:</b> {', '.join(times) if times else 'Yok'}\n🤖 <b>Durum:</b> {durum}"
     await update.message.reply_text(mesaj, parse_mode="HTML")
 
+# --- PORTFÖY ---
+async def btn_portfoy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Portföy hesaplanıyor...")
+    data = await get_all_data()
+    await update.message.reply_text(await portfolio_message(data.get("Piyasa", {})), parse_mode="HTML")
+
+async def change_holding(update: Update, context: ContextTypes.DEFAULT_TYPE, sign):
+    if len(context.args) != 2:
+        komut = "ekle" if sign > 0 else "cikar"
+        await update.message.reply_text(
+            f"Kullanım: /{komut} <varlık> <miktar>\n"
+            "Varlıklar: tl, altin, gumus, usd, eur, rub, hisse:KOD, fon:KOD\n"
+            f"Örnek: /{komut} altin 2,5")
+        return
+    try:
+        key = parse_asset(context.args[0])
+        amount = parse_amount(context.args[1])
+        if amount <= 0:
+            raise ValueError("Miktar sıfırdan büyük olmalı")
+        settings = load_settings()
+        holdings = dict(settings.get("portfolio", {}))
+        add_holding(holdings, key, sign * amount)
+    except ValueError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+    settings["portfolio"] = holdings
+    save_settings(settings)
+    await update.message.reply_text(f"✅ Kaydedildi. {key}: {holdings.get(key, 0):g}")
+
+async def cmd_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await change_holding(update, context, 1)
+
+async def cmd_cikar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await change_holding(update, context, -1)
+
+async def cmd_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("Kullanım: /sil <varlık>  (ör. /sil fon:AFT)")
+        return
+    try:
+        key = parse_asset(context.args[0])
+    except ValueError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+    settings = load_settings()
+    holdings = dict(settings.get("portfolio", {}))
+    if holdings.pop(key, None) is None:
+        await update.message.reply_text(f"Portföyde {key} yok.")
+        return
+    settings["portfolio"] = holdings
+    save_settings(settings)
+    await update.message.reply_text(f"🗑️ {key} portföyden silindi.")
+
+async def cmd_fiyat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Kullanım: /fiyat <varlık> <TL fiyatı>\n"
+            "Fon fiyatları otomatik alınamıyor; TEFAS veya bankadaki fiyatı buraya yaz.\n"
+            "Örnek: /fiyat fon:AFT 2,3456")
+        return
+    try:
+        key = parse_asset(context.args[0])
+        price = parse_amount(context.args[1])
+        if price <= 0:
+            raise ValueError("Fiyat sıfırdan büyük olmalı")
+    except ValueError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+    settings = load_settings()
+    prices = dict(settings.get("manual_prices", {}))
+    prices[key] = price
+    settings["manual_prices"] = prices
+    save_settings(settings)
+    await update.message.reply_text(f"✅ {key} fiyatı {price:g} TL olarak kaydedildi.")
+
 def main():
     if not TELEGRAM_BOT_TOKEN: return
     
@@ -145,6 +231,12 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^▶️ Başlat$"), btn_baslat))
     application.add_handler(MessageHandler(filters.Regex("^⏸️ Durdur$"), btn_durdur))
     application.add_handler(MessageHandler(filters.Regex("^⏰ Aktif Saatleri Gör$"), btn_saatleri_gor))
+    application.add_handler(MessageHandler(filters.Regex("^💼 Portföyüm$"), btn_portfoy))
+    application.add_handler(CommandHandler("portfoy", btn_portfoy))
+    application.add_handler(CommandHandler("ekle", cmd_ekle))
+    application.add_handler(CommandHandler("cikar", cmd_cikar))
+    application.add_handler(CommandHandler("sil", cmd_sil))
+    application.add_handler(CommandHandler("fiyat", cmd_fiyat))
 
     schedule_jobs(application)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
