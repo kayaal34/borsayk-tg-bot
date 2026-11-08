@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from config import TELEGRAM_BOT_TOKEN, TARGET_CHAT_ID, TZ_YEKATERINBURG, logger
 from data_fetcher import get_all_data
 from formatter import format_daily_message
-from settings_manager import load_settings, save_settings
+from settings_manager import load_settings, parse_time, save_settings
 from keep_alive import keep_alive
 
 # Saat sorma adımları
@@ -53,31 +53,42 @@ async def start_time_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['temp_times'] = []
     await update.message.reply_text(
         "⚙️ <b>Saat Ayarlama Sihirbazı</b>\n\n"
-        "1. Bildirim saati ne zaman olsun? (Örn: 09:00)\n"
+        "1️⃣ İlk bildirim saati? (Örn: 09:00)\n"
         "<i>İstemiyorsanız 'gec' yazın.</i>",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove()
     )
     return ASK_TIME_1
 
-async def handle_time_1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+SKIP_WORDS = ("gec", "geç", "-")
+
+async def read_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Girilen saati listeye ekler. Geçersizse False döner."""
     text = update.message.text.strip()
-    if text.lower() != 'gec': context.user_data['temp_times'].append(text)
-    await update.message.reply_text("2. Bildirim saati? (İstemiyorsanız 'gec')", parse_mode="HTML")
+    if text.lower() in SKIP_WORDS:
+        return True
+    parsed = parse_time(text)
+    if parsed is None:
+        await update.message.reply_text("⚠️ Saati anlayamadım. Örnek: <code>09:00</code> (veya 'gec')", parse_mode="HTML")
+        return False
+    if parsed not in context.user_data['temp_times']:
+        context.user_data['temp_times'].append(parsed)
+    return True
+
+async def handle_time_1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await read_time(update, context): return ASK_TIME_1
+    await update.message.reply_text("2️⃣ İkinci bildirim saati? (İstemiyorsanız 'gec')")
     return ASK_TIME_2
 
 async def handle_time_2(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text.lower() != 'gec': context.user_data['temp_times'].append(text)
-    await update.message.reply_text("3. Bildirim saati? (İstemiyorsanız 'gec')", parse_mode="HTML")
+    if not await read_time(update, context): return ASK_TIME_2
+    await update.message.reply_text("3️⃣ Üçüncü bildirim saati? (İstemiyorsanız 'gec')")
     return ASK_TIME_3
 
 async def handle_time_3(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text.lower() != 'gec': context.user_data['temp_times'].append(text)
-    
+    if not await read_time(update, context): return ASK_TIME_3
     settings = load_settings()
-    times = context.user_data['temp_times']
+    times = sorted(context.user_data['temp_times'])
     if times:
         settings['notification_times'] = times
         save_settings(settings)

@@ -37,3 +37,19 @@ def test_damaged_file_falls_back_to_defaults(settings_file, content):
     settings_file.write_text(content, encoding="utf-8")
 
     assert settings_manager.load_settings()["is_active"] is True
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("09:00", "09:00"),
+    ("9:05", "09:05"),
+    ("18.30", "18:30"),
+    ("0745", "07:45"),
+    (" 23:59 ", "23:59"),
+])
+def test_parse_time(text, expected):
+    assert settings_manager.parse_time(text) == expected
+
+
+@pytest.mark.parametrize("text", ["24:00", "12:60", "abc", "9", "1:2:3", "-1:00", ""])
+def test_parse_time_rejects_invalid(text):
+    assert settings_manager.parse_time(text) is None
