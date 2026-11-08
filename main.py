@@ -93,10 +93,14 @@ async def handle_time_3(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if times:
         settings['notification_times'] = times
         save_settings(settings)
-    
+        mesaj = f"✅ Kurulum tamamlandı!\n⏰ Aktif saatler: {', '.join(times)}"
+    else:
+        # Hiç saat girilmediyse eski saatler korunur; kullanıcıya bunu söyleyelim
+        eski = ", ".join(settings.get("notification_times", [])) or "yok"
+        mesaj = f"ℹ️ Yeni saat girilmedi, eski saatler korunuyor: {eski}"
+
     schedule_jobs(context.application)
-    saatler = ", ".join(times) if times else "Hiçbiri"
-    await update.message.reply_text(f"✅ Kurulum tamamlandı!\n⏰ Aktif Saatler: {saatler}", reply_markup=get_main_menu())
+    await update.message.reply_text(mesaj, reply_markup=get_main_menu())
     return ConversationHandler.END
 
 async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
